@@ -5,13 +5,22 @@
 #include "particles.hpp"
 #include <vector>
 #include <cmath>
-#include <map>
+#include <unordered_map>
+#include <functional>
+
+// Custom hash function for grid keys (std::pair<int, int>)
+struct KeyHash {
+    std::size_t operator()(const Key& k) const {
+        // Combine two 32-bit integers into a 64-bit hash
+        return (std::size_t(k.first) << 32) | (std::size_t(k.second) & 0xFFFFFFFF);
+    }
+};
 
 struct Simulation {
 
     Particles particles;
     sf::CircleShape circle;
-    std::map<Key, std::vector<int>> grid;
+    std::unordered_map<Key, std::vector<int>, KeyHash> grid;
     sf::Vector2f system_gravity;
     FPS fps_counter;
     
@@ -36,12 +45,28 @@ struct Simulation {
     void assign_grid() {
 
         grid.clear();
+
+        // Reserve expected grid size to reduce hash table rehashing
+        // Approximate number of cells: (display_x/width) * (display_y/width)
+        int expected_cells = (display_x / width) * (display_y / width) * 0.5;  // 50% utilization estimate
+        grid.reserve(expected_cells);
+
         int index = 0;
 
         for (Particle& i : particles.contents) {
             int x_id = floor(i.position.x / width);
             int y_id = floor(i.position.y / width);
-            grid[{x_id, y_id}].emplace_back(index);
+
+            Key cell_key = {x_id, y_id};
+            auto& cell = grid[cell_key];
+
+            // Reserve capacity on first insertion to reduce vector reallocations
+            if (cell.empty()) {
+                // Estimate ~3 particles per cell on average (can tune based on profiling)
+                cell.reserve(4);
+            }
+
+            cell.emplace_back(index);
             index += 1;
         }
     }
@@ -67,22 +92,26 @@ struct Simulation {
             tolerance = adj_target;
         }
 
-        if ((d_sqrd < tolerance * tolerance) || linked || softbody) {
+        // Early exit for non-colliding particles (avoids expensive sqrt)
+        // For linked/softbody particles, always resolve constraint
+        if (!linked && !softbody && d_sqrd >= tolerance * tolerance) {
+            return;
+        }
 
-            float distance = sqrt(d_sqrd);
-            float i_ratio = i.radius / tolerance;
-            float j_ratio = j.radius / tolerance;
+        // Only compute sqrt when we know we need to resolve the constraint
+        float distance = sqrt(d_sqrd);
+        float i_ratio = i.radius / tolerance;
+        float j_ratio = j.radius / tolerance;
 
-            float scalar = 0.5 * (distance - tolerance);
-            sf::Vector2f divisor = scalar * change / distance;
+        float scalar = 0.5 * (distance - tolerance);
+        sf::Vector2f divisor = scalar * change / distance;
 
-            if (!i.fixed || i.fixed_motion) {
-                i.position -= divisor * i_ratio;
-            }
+        if (!i.fixed || i.fixed_motion) {
+            i.position -= divisor * i_ratio;
+        }
 
-            if (!j.fixed || j.fixed_motion) {
-                j.position += divisor * j_ratio;
-            }
+        if (!j.fixed || j.fixed_motion) {
+            j.position += divisor * j_ratio;
         }
     }
 
@@ -93,8 +122,14 @@ struct Simulation {
     ) {
 
         bool same_cell = inner_id == outer_id;
-        std::vector<int>& outer = grid[outer_id];
 
+        // Use find() to avoid creating empty entries for non-existent cells
+        auto outer_it = grid.find(outer_id);
+        if (outer_it == grid.end()) {
+            return;  // Cell doesn't exist, skip
+        }
+
+        std::vector<int>& outer = outer_it->second;
         int start = 0;
 
         if (inner.size() == 0 || outer.size() == 0) {
