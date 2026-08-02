@@ -17,7 +17,7 @@ threaded and uses a high-performance simulation grid system designed to make
 the collision algorithim move from _O(N^2)_ to approximately _O(N)_. On my laptop,
 which is an x86 Linux machine, I can acheive good frame rates for about 5000
 particles. Without these algorithimic improvements, I could only handle around
-500 particles.
+500 particles. Multithreading would improve this even more!
 
 # Build Instructions
 
